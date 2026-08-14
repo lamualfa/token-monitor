@@ -12397,6 +12397,34 @@ function loadImage(src) {
   });
 }
 
+function trayIconPaintedDarkMonochrome(ctx, size) {
+  const data = ctx.getImageData(0, 0, size, size).data;
+  let opaque = 0;
+  let maxLuminance = 0;
+  let maxSaturation = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i + 3] < 40) continue;
+    opaque += 1;
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
+    const luminance = Math.max(r, g, b);
+    const saturation = luminance - Math.min(r, g, b);
+    if (luminance > maxLuminance) maxLuminance = luminance;
+    if (saturation > maxSaturation) maxSaturation = saturation;
+  }
+  return opaque > size && maxLuminance < 80 && maxSaturation < 24;
+}
+
+// Some tray icon sources are monochrome assets that only work where the host
+// recolors them: the macOS menubar template PNG, and SVGs authored with
+// fill="currentColor" (which canvas resolves to black). On Linux tray hosts
+// nothing remaps them, so on dark panels they render as an invisible black
+// square and the tray icon looks missing or dead. Repaint such glyphs in a
+// light neutral that stays visible on both light and dark bars.
+const TRAY_MONOCHROME_LIGHTEN_COLOR = '#e6e6e6';
+const rendererIsLinux = /linux/i.test(navigator.platform || '');
+
 function providerImageToPngDataUrl(img, size, showBadge = false, options = {}) {
   const { trayProviderBadgeLayout } = window.TokenMonitorTrayProviderIcons;
   const layout = trayProviderBadgeLayout(size);
@@ -12423,6 +12451,13 @@ function providerImageToPngDataUrl(img, size, showBadge = false, options = {}) {
     showBadge ? '' : options.templateColor || ''
   );
 
+  if (
+    !showBadge && rendererIsLinux && !options.templateColor
+    && trayIconPaintedDarkMonochrome(ctx, layout.iconSize)
+  ) {
+    ctx.clearRect(0, 0, layout.iconSize, layout.iconSize);
+    paintProviderImage(ctx, img, imageInset, imageInset, imageSize, TRAY_MONOCHROME_LIGHTEN_COLOR);
+  }
   if (!showBadge) return canvas.toDataURL('image/png');
 
   const { x, y, badgeSize, radius, borderWidth } = layout;

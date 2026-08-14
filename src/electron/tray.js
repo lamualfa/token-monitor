@@ -172,6 +172,27 @@ function buildTrayMenuTemplate(options = {}) {
   ];
 }
 
+// Rebuilding and re-attaching the Linux context menu re-registers the D-Bus
+// menu (and can re-export the StatusNotifierItem), which tray hosts treat as a
+// churn signal — GNOME's AppIndicator extension re-creates its panel actor and,
+// hammered on every stats tick, ends up rendering nothing. Only rebuild when
+// the parts of the menu state that are visible in it actually changed.
+function trayMenuStateSignature(state = {}) {
+  return JSON.stringify([
+    state.appVersion,
+    state.refreshing,
+    state.trayContent,
+    state.trayMode,
+    state.windowBehavior,
+    state.activeCodexAccountId,
+    state.codexSwitching,
+    state.maskAccountEmails,
+    state.viewEnabled,
+    (Array.isArray(state.codexAccounts) ? state.codexAccounts : [])
+      .map((account) => [account?.id, account?.email, account?.accountName, account?.accountLabel, account?.accountKey])
+  ]);
+}
+
 function createTray({
   getMenuState,
   onOpenSettings,
@@ -188,21 +209,40 @@ function createTray({
   const tray = new Tray(buildTrayIcon());
   tray.setToolTip('Token Monitor');
 
+  const buildMenu = () => Menu.buildFromTemplate(buildTrayMenuTemplate({
+    state: typeof getMenuState === 'function' ? getMenuState() : {},
+    onOpenSettings,
+    onOpenView,
+    onQuit,
+    onRefresh,
+    onSetTrayContent,
+    onSetWindowPresentation,
+    onSwitchCodexAccount,
+    translate: translateMenu
+  }));
+
+  let linuxMenuSignature = null;
+  const attachLinuxMenu = (force = false) => {
+    if (process.platform !== 'linux' || tray.isDestroyed()) return;
+    const state = typeof getMenuState === 'function' ? getMenuState() : {};
+    const signature = trayMenuStateSignature(state);
+    if (!force && signature === linuxMenuSignature) return;
+    linuxMenuSignature = signature;
+    tray.setContextMenu(buildMenu());
+  };
+
+  // Linux tray hosts (GNOME AppIndicator/KStatusNotifier, KDE Plasma) display
+  // the D-Bus menu exported via com.canonical.dbusmenu on right-click and never
+  // deliver Electron's 'right-click' event, so the menu has to be attached with
+  // setContextMenu() to be reachable; popUpContextMenu() alone shows nothing.
+  attachLinuxMenu(true);
+
   tray.on('click', () => onToggle(tray));
   tray.on('right-click', () => {
-    const menu = Menu.buildFromTemplate(buildTrayMenuTemplate({
-      state: typeof getMenuState === 'function' ? getMenuState() : {},
-      onOpenSettings,
-      onOpenView,
-      onQuit,
-      onRefresh,
-      onSetTrayContent,
-      onSetWindowPresentation,
-      onSwitchCodexAccount,
-      translate: translateMenu
-    }));
-    tray.popUpContextMenu(menu);
+    tray.popUpContextMenu(buildMenu());
   });
+
+  tray.refreshContextMenu = () => attachLinuxMenu();
 
   return tray;
 }
